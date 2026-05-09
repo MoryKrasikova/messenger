@@ -59,21 +59,22 @@ void *handle_client(void *arg){
     client_count++;
     pthread_mutex_unlock(&client_mutex);
     printf("[%s] Подключился/лась\n", client_name);
-    char welcome_msg[BUFFER_SIZE];
-    snprint(welcome_msg, sizeof(welcome_msg), "Добро пожаловать в чат, %s!", client_name);
-    send(client_sock, welcome_msg, strlen(welcome_msg), 0);
 
 //оповещение всех о входе 
     char join_msg[BUFFER_SIZE];
     snprintf(join_msg, sizeof(join_msg), " %s вошел/а в чат", client_name);
     broadcast_messenge("Система:", join_msg, client_sock);
 
-//обработка сообщений от пользователя(exit)
+//обработка сообщений от пользователя
     while(1){
         bytes = recv(client_sock, buffer, BUFFER_SIZE - 1, 0);
         if(bytes <= 0) break;
+        buffer[bytes] = '\0';
 
         if(strcmp(buffer, "/exit") == 0) break;
+
+        printf("[%s]: %s\n", client_name, buffer);
+        broadcast_messenge(client_name, buffer, client_sock);
     }
 
 //удаляем клиента при выходе
@@ -92,9 +93,10 @@ void *handle_client(void *arg){
 
 //оповещение всех о выходе
     char leave_msg[BUFFER_SIZE];
-    snprintf(buffer, sizeof(leave_msg), " %s покинул/а чат", client_name);
+    snprintf(leave_msg, sizeof(leave_msg), " %s покинул/а чат", client_name);
     broadcast_messenge("Система:", leave_msg, client_sock);
-
+    printf("[%s] Отключился/лась\n", client_name);
+    
     close(client_sock);
     return NULL;
 }
