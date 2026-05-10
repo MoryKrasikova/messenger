@@ -5,10 +5,12 @@
 #include <arpa/inet.h>
 #include <locale.h>
 #include <time.h>
+#include <signal.h>
 
 #define _GNU_SOURCE
 #include <string.h>
 
+int server_fd;
 #define PORT 8888
 #define MAX_CLIENTS 100
 #define BUFFER_SIZE 1024
@@ -22,6 +24,14 @@ typedef struct {
 Client clients[MAX_CLIENTS];
 int client_count = 0;
 pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+//функция обработчик для завершения сервера
+void handle_sigint(int sig){
+    printf("\nВыключение сервера\n");
+    log_server("Server Stop");
+    close(server_fd);
+    exit(0);
+}
 
 //логи сервера 
 void log_server(const char *event){
@@ -159,11 +169,12 @@ void *handle_client(void *arg){
 }
 
 int main(){
-    setlocale(LC_ALL, "ru_RU.UTF-8");
-    int server_fd, *client_fd;
+    int *client_fd;
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
     pthread_t thread;
+
+    signal(SIGINT, handle_sigint);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     addr.sin_family = AF_INET;
@@ -182,8 +193,6 @@ int main(){
         pthread_create(&thread, NULL, handle_client, client_fd);
         pthread_detach(thread);
     }
-    log_server("Server Stop");
-    close(server_fd);
 
     return 0;
 }
