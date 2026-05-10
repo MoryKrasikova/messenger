@@ -1,9 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <arpa/inet.h>
+#include <locale.h>
+#include <time.h>
+
+#define _GNU_SOURCE
+#include <string.h>
 
 #define PORT 8888
 #define MAX_CLIENTS 100
@@ -18,6 +22,19 @@ typedef struct {
 Client clients[MAX_CLIENTS];
 int client_count = 0;
 pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+//логи сервера 
+void log_server(const char *event){
+    FILE *f = fopen("server.log", "a");
+    if (!f) return;
+
+    time_t t = time(NULL);
+    char *time_str = ctime(&t);
+    time_str[strlen(time_str) - 1] = '\0';
+
+    fprintf(f, "[%s] %s\n", time_str, event);
+    fclose(f);
+}
 
 //сообщение для всех
 void broadcast_messenge(const char *sender_name, const char *message, int sender_socket){
@@ -42,7 +59,7 @@ int sender_sock){
 
     pthread_mutex_lock(&client_mutex);
     for(int i = 0; i<client_count; i++){
-        if(clients[i].active && strcmp(clients[i].name, recipient_name) == 0){
+        if(clients[i].active && strcasecmp(clients[i].name, recipient_name) == 0){
             send(clients[i].socket, full_message, strlen(full_message), 0);
             break;
         }
@@ -76,10 +93,15 @@ void *handle_client(void *arg){
     pthread_mutex_unlock(&client_mutex);
     printf("[%s] Подключился/лась\n", client_name);
 
+//добавляем сообщение о подключение в логи
+    char log_buf[64];
+    snprintf(log_buf, sizeof(log_buf), "User Connect: %s", client_name);
+    log_server(log_buf);
+
 //оповещение всех о входе 
     char join_msg[BUFFER_SIZE];
     snprintf(join_msg, sizeof(join_msg), " %s вошел/а в чат", client_name);
-    broadcast_messenge("Система:", join_msg, client_sock);
+    broadcast_messenge("Система", join_msg, client_sock);
 
 //обработка сообщений от пользователя
     while(1){
@@ -123,16 +145,21 @@ void *handle_client(void *arg){
     }
     pthread_mutex_unlock(&client_mutex);
 
-//оповещение всех о выходе
+//оповещение всех о выходе + добавление сообщения в логи
     char leave_msg[BUFFER_SIZE];
     snprintf(leave_msg, sizeof(leave_msg), " %s покинул/а чат", client_name);
-    broadcast_messenge("Система:", leave_msg, client_sock);
+    broadcast_messenge("Система", leave_msg, client_sock);
     printf("[%s] Отключился/лась\n", client_name);
+
+    snprintf(log_buf, sizeof(log_buf), "User Disconnect: %s", client_name);
+    log_server(log_buf);
+
     close(client_sock);
     return NULL;
 }
 
 int main(){
+    setlocale(LC_ALL, "ru_RU.UTF-8");
     int server_fd, *client_fd;
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -145,6 +172,7 @@ int main(){
 
     bind(server_fd, (struct sockaddr*)&addr, sizeof(addr));
     listen(server_fd, 5);
+    log_server("Server Start");
 
     printf("Сервер слушает порт %d\n", PORT);
 
@@ -154,6 +182,7 @@ int main(){
         pthread_create(&thread, NULL, handle_client, client_fd);
         pthread_detach(thread);
     }
+    log_server("Server Stop");
     close(server_fd);
 
     return 0;
