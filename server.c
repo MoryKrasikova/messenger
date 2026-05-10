@@ -34,6 +34,22 @@ void broadcast_messenge(const char *sender_name, const char *message, int sender
     pthread_mutex_unlock(&client_mutex);
 }
 
+//личные сообщения 
+void send_private_msg(const char *recipient_name, const char *sender_name, const char *message, 
+int sender_sock){
+    char full_message[BUFFER_SIZE];
+    snprintf(full_message, sizeof(full_message), "[ЛС от %s]: %s", sender_name, message);
+
+    pthread_mutex_lock(&client_mutex);
+    for(int i = 0; i<client_count; i++){
+        if(clients[i].active && strcmp(clients[i].name, recipient_name) == 0){
+            send(clients[i].socket, full_message, strlen(full_message), 0);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&client_mutex);
+}
+
 //обработка клиента
 void *handle_client(void *arg){
     int client_sock = *(int*)arg;
@@ -72,9 +88,25 @@ void *handle_client(void *arg){
         buffer[bytes] = '\0';
 
         if(strcmp(buffer, "/exit") == 0) break;
+//личное сообщение
+        if(buffer[0] == '@'){
+            char recipient[32];
+            char msg[BUFFER_SIZE];
 
-        printf("[%s]: %s\n", client_name, buffer);
-        broadcast_messenge(client_name, buffer, client_sock);
+            if(sscanf(buffer, "@%31s %[^\n]", recipient, msg) == 2){
+                printf("[%s] -> [%s]: %s\n", client_name, recipient, msg);
+                send_private_msg(recipient, client_name, msg, client_sock);
+            }
+            else{
+                char err_msg[] = "Неверный формат. Используйте: @имя_получателя сообщение\n";
+                send(client_sock, err_msg, strlen(err_msg), 0);
+            }
+        }
+//для всех
+        else {
+            printf("[%s]: %s\n", client_name, buffer);
+            broadcast_messenge(client_name, buffer, client_sock);
+        }
     }
 
 //удаляем клиента при выходе
@@ -96,7 +128,6 @@ void *handle_client(void *arg){
     snprintf(leave_msg, sizeof(leave_msg), " %s покинул/а чат", client_name);
     broadcast_messenge("Система:", leave_msg, client_sock);
     printf("[%s] Отключился/лась\n", client_name);
-    
     close(client_sock);
     return NULL;
 }
