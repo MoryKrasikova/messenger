@@ -25,6 +25,59 @@ Client clients[MAX_CLIENTS];
 int client_count = 0;
 pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+//список всех пользователей, какие заходили в чат
+typedef struct{
+    char name[32];
+    int exists;
+} RegisteredUser;
+RegisteredUser registered_users[100];
+int registered_count = 0;
+pthread_mutex_t registered_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+//создание списка пользователей и добавление новых
+void load_registered_users(){
+    FILE *f = fopen("users.txt", "r");
+    if(!f) return;
+    registered_count = 0;
+    while(fscanf(f, "%31s \n", registered_users[registered_count].name) == 1){
+        registered_users[registered_count].exists = 1;
+        registered_count ++;
+    }
+    fclose(f);
+}
+
+void save_registered_users(){
+    FILE *f = fopen("users.txt", "w");
+    if (!f) return;
+    for(int i = 0; i < registered_count; i++){
+        fprintf(f, "%s\n", registered_users[i].name);
+    }
+    fclose(f);
+}
+
+int(user_exists(const char *name)){
+    for( int i = 0; i < registered_count; i++){
+        if(strcmp(registered_users[i].name, name) == 0){
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void add_registered_user(const char *name){
+    pthread_mutex_lock(&registered_mutex);
+
+    if(user_exists(name)) return;
+    if(registered_count < 100){
+        strcpy(registered_users[registered_count].name, name);
+        registered_users[registered_count].exists = 1;
+        registered_count++;
+        save_registered_users();
+    }
+
+    pthread_mutex_unlock(&registered_mutex);
+}
+
 //функция обработчик для завершения сервера
 void handle_sigint(int sig){
     printf("\nВыключение сервера\n");
@@ -113,11 +166,26 @@ void *handle_client(void *arg){
     snprintf(join_msg, sizeof(join_msg), " %s вошел/а в чат", client_name);
     broadcast_messenge("Система", join_msg, client_sock);
 
+//добавляем в список пользователей
+    add_registered_user(client_name);
+
 //обработка сообщений от пользователя
     while(1){
         bytes = recv(client_sock, buffer, BUFFER_SIZE - 1, 0);
         if(bytes <= 0) break;
         buffer[bytes] = '\0';
+
+        printf("DEBUG: Сервер получил от %s: %s\n", client_name, buffer);
+//проверка существует ли пользователь
+        if(strncmp(buffer, "CHECK_USER ", 11) == 0){
+            char check_name[32];
+            sscanf(buffer + 11, "%31s", check_name);
+            if(user_exists(check_name)){
+                send(client_sock, "USER_EXISTS", 11, 0);
+            }
+            else send(client_sock, "USER_NOT_EXISTS", 15, 0);
+            continue;
+        }
 
         if(strcmp(buffer, "/exit") == 0) break;
 //личное сообщение
@@ -169,6 +237,7 @@ void *handle_client(void *arg){
 }
 
 int main(){
+    setlocale(LC_ALL, "ru_RU.UTF-8");
     int *client_fd;
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -186,6 +255,8 @@ int main(){
     log_server("Server Start");
 
     printf("Сервер слушает порт %d\n", PORT);
+
+    load_registered_users();
 
     while(1){
         client_fd = malloc(sizeof(int));
