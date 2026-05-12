@@ -36,6 +36,7 @@ RegisteredUser registered_users[100];
 int registered_count = 0;
 pthread_mutex_t registered_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+
 //уведомления в личных чатах
 void notify_private_chat(const char *client_name, const char *partner, const char *status){
     char msg[BUFFER_SIZE];
@@ -116,8 +117,63 @@ void log_server(const char *event){
     fclose(f);
 }
 
+//сохранение истории
+void save_message_to_history(const char *from , const char *to, const char *message, int is_group){
+    char filename[128];
+    if(is_group){
+        snprintf(filename, sizeof(filename), "chat_broadcast.log");
+    }
+    else{
+                char name1[32], name2[32];
+        strcpy(name1, from);
+        strcpy(name2, to);
+        if (strcmp(name1, name2) > 0)
+            snprintf(filename, sizeof(filename), "chat_%s_%s.log", name2, name1);
+        else
+            snprintf(filename, sizeof(filename), "chat_%s_%s.log", name1, name2);
+    }
+
+    FILE *f = fopen(filename, "a");
+    if (!f) return;
+    fprintf(f, "[%s]: %s\n", from, message);
+    fclose(f);
+}
+
+//отправка истории клиенту
+void send_chat_history(int client_sock, const char *current_user, const char *chat_name, int is_group) {
+    char filename[128];
+    if (is_group) {
+        snprintf(filename, sizeof(filename), "chat_broadcast.log");
+    } 
+    else {
+        char name1[32], name2[32];
+        strcpy(name1, current_user);
+        strcpy(name2, chat_name);
+        if (strcmp(name1, name2) > 0)
+            snprintf(filename, sizeof(filename), "chat_%s_%s.log", name2, name1);
+        else
+            snprintf(filename, sizeof(filename), "chat_%s_%s.log", name1, name2);
+    }
+
+    FILE *f = fopen(filename, "r");
+    if (!f) return;
+
+    send(client_sock, "HISTORY_START", 13, 0);
+    char line[BUFFER_SIZE];
+    while(fgets(line, sizeof(line), f)){
+        line[strcspn(line, "\n")] = '\0';
+        send(client_sock, line, strlen(line), 0);
+        send(client_sock, "\n", 1, 0);
+    }
+    fclose(f);
+    send(client_sock, "HISTORY_END", 11, 0);
+}
+
 //сообщение для всех
 void broadcast_messenge(const char *sender_name, const char *message, int sender_socket){
+    if(strcmp(sender_name, "Система") != 0){
+        save_message_to_history(sender_name, "ALL", message, 1);
+    }
     char full_message[BUFFER_SIZE];
     snprintf(full_message, sizeof(full_message), "[%s]: %s", sender_name, message);
 
@@ -136,6 +192,8 @@ void send_private_msg(const char *recipient_name, const char *sender_name, const
 int sender_sock){
     char full_message[BUFFER_SIZE];
     snprintf(full_message, sizeof(full_message), "[ЛС от %s]: %s", sender_name, message);
+
+    save_message_to_history(sender_name, recipient_name, message, 0);
 
     pthread_mutex_lock(&client_mutex);
     for(int i = 0; i<client_count; i++){
@@ -192,7 +250,6 @@ void *handle_client(void *arg){
         if(bytes <= 0) break;
         buffer[bytes] = '\0';
 
-        printf("DEBUG: Сервер получил от %s: %s\n", client_name, buffer);
 //проверка существует ли пользователь
         if(strncmp(buffer, "CHECK_USER ", 11) == 0){
             char check_name[32];
@@ -201,6 +258,15 @@ void *handle_client(void *arg){
                 send(client_sock, "USER_EXISTS", 11, 0);
             }
             else send(client_sock, "USER_NOT_EXISTS", 15, 0);
+            continue;
+        }
+
+//получение истории
+        if(strncmp(buffer, "GET_HISTORY ", 12) == 0){
+            char chat_name[64];
+            sscanf(buffer + 12, "%63s", chat_name);
+            int is_group = (strcmp(chat_name, "BROADCAST") == 0);
+            send_chat_history(client_sock, client_name, chat_name, is_group);
             continue;
         }
 
@@ -299,15 +365,11 @@ void *handle_client(void *arg){
 //оповещение всех о выходе + добавление сообщения в логи
     char leave_msg[BUFFER_SIZE];
     snprintf(leave_msg, sizeof(leave_msg), " %s покинул/а чат", client_name);
-    broadcast_messenge("Система", leave_msg, client_sock);
     printf("[%s] Отключился/лась\n", client_name);
 
     snprintf(log_buf, sizeof(log_buf), "User Disconnect: %s", client_name);
     log_server(log_buf);
 
-    if(strlen(clients[client_count-1].private_chat_with) > 0){
-        notify_private_chat(client_name, clients[client_count-1].private_chat_with, "вышел из");
-    }
     close(client_sock);
     return NULL;
 }
