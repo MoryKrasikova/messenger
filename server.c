@@ -19,6 +19,7 @@ typedef struct {
     int socket;
     char name[32];
     int active;
+    int in_common_chat;
 } Client;
 //массив клиентов
 Client clients[MAX_CLIENTS];
@@ -184,6 +185,32 @@ void *handle_client(void *arg){
                 send(client_sock, "USER_EXISTS", 11, 0);
             }
             else send(client_sock, "USER_NOT_EXISTS", 15, 0);
+            continue;
+        }
+
+        if(strcmp(buffer, "ENTER_COMMON") == 0){
+            for(int i = 0; i < client_count; i++){
+                if(clients[i].socket == client_sock){
+                    clients[i].in_common_chat = 1;
+                    break;
+                }
+            }
+            char enter_msg[BUFFER_SIZE];
+            snprintf(enter_msg, sizeof(enter_msg), " %s вошёл в чат", client_name);
+            broadcast_messenge("Система", enter_msg, client_sock);
+            continue;
+        }
+
+        if(strcmp(buffer, "LEAVE_COMMON") == 0){
+            for(int i = 0; i < client_count; i++){
+                if(clients[i].socket == client_sock){
+                    clients[i].in_common_chat = 0;
+                    break;
+                }
+            }
+            char leave_msg[BUFFER_SIZE];
+            snprintf(leave_msg, sizeof(leave_msg), " %s вышел из чата", client_name);
+            broadcast_messenge("Система", leave_msg, client_sock);
             continue;
         }
 

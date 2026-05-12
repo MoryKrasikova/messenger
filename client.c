@@ -11,7 +11,7 @@
 
 #define PORT "8888"
 #define BUFFER_SIZE 1024
-
+char my_name[32];
 int server_sock;
 int in_chat = 0;
 int current_chat_type = 0;
@@ -109,6 +109,14 @@ void *receive_message(void *arg){
                 fflush(stdout);
             }
         }
+        else if(strncmp(buffer, "[Система]", 9) == 0){
+            if(in_chat && current_chat_type == 1){
+                printf("\r\033[K");
+                printf("%s\n", buffer);
+                printf("> ");
+                fflush(stdout);
+            }
+        }
         else if(in_chat && current_chat_type == 1 && buffer[0] == '['){
             if(strncmp(buffer, "[ЛС от ", 11) != 0){
                 printf("\r\033[K");
@@ -128,6 +136,7 @@ void enter_common_chat(){
     strcpy(current_chat_name, "Общий чат");
     char msg[BUFFER_SIZE];
     in_chat = 1;
+    send(server_sock, "ENTER_COMMON", 12, 0);
 
     printf("\n--- Общий чат ---\n");
     printf("Все пользователи видят сообщения\n");
@@ -140,6 +149,7 @@ void enter_common_chat(){
         msg[strcspn(msg, "\n")] = '\0';
 
         if(strcmp(msg, "/exit") == 0){
+            send(server_sock, "LEAVE_COMMON", 12, 0);
             in_chat = 0;
             break;
         }
@@ -232,7 +242,6 @@ void enter_private_chat(){
 
         char buffer[BUFFER_SIZE];
         snprintf(buffer, sizeof(buffer), "@%s %s", recipient, msg);
-        printf("DEBUG: Отправляю: %s\n", buffer);
         send(server_sock, buffer, strlen(buffer), 0);
     }
 
@@ -266,6 +275,7 @@ int main(int argc, char *argv[]){
     fflush(stdout);
     fgets(name, sizeof(name), stdin);
     name[strcspn(name, "\n")] = '\0';
+    strcpy(my_name, name);
 
     set_contacts_filename(name);
     load_my_contacts();
