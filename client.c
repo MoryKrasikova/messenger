@@ -110,7 +110,7 @@ void *receive_message(void *arg){
             }
         }
         else if(strncmp(buffer, "[Система]", 9) == 0){
-            if(in_chat && current_chat_type == 1){
+            if(in_chat && current_chat_type == 1 || in_chat && current_chat_type == 2){
                 printf("\r\033[K");
                 printf("%s\n", buffer);
                 printf("> ");
@@ -226,6 +226,11 @@ void enter_private_chat(){
     strcpy(current_chat_name, recipient);
 
     in_chat = 1;
+
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "ENTER_PRIVATE %s", recipient);
+    send(server_sock, cmd, strlen(cmd), 0);
+
     printf("\n--- Личный чат с %s ---\n", recipient);
     printf("Введите /exit для выхода\n\n");
 
@@ -236,6 +241,7 @@ void enter_private_chat(){
         msg[strcspn(msg, "\n")] = '\0';
 
         if(strcmp(msg, "/exit") == 0){
+            send(server_sock, "LEAVE_PRIVATE", 13, 0);
             in_chat = 0;
             break;
         }

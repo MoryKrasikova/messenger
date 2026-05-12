@@ -20,6 +20,7 @@ typedef struct {
     char name[32];
     int active;
     int in_common_chat;
+    char private_chat_with[32];
 } Client;
 //массив клиентов
 Client clients[MAX_CLIENTS];
@@ -34,6 +35,21 @@ typedef struct{
 RegisteredUser registered_users[100];
 int registered_count = 0;
 pthread_mutex_t registered_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+//уведомления в личных чатах
+void notify_private_chat(const char *client_name, const char *partner, const char *status){
+    char msg[BUFFER_SIZE];
+    snprintf(msg, sizeof(msg), "[Система]: %s %s личный чат", client_name, status);
+
+    pthread_mutex_lock(&client_mutex);
+    for(int i = 0; i < client_count; i++){
+        if(clients[i].active && strcmp(clients[i].private_chat_with, client_name) == 0){
+            send(clients[i].socket, msg, strlen(msg), 0);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&client_mutex);
+}
 
 //создание списка пользователей и добавление новых
 void load_registered_users(){
@@ -188,6 +204,7 @@ void *handle_client(void *arg){
             continue;
         }
 
+//уведомления о входах в чаты
         if(strcmp(buffer, "ENTER_COMMON") == 0){
             for(int i = 0; i < client_count; i++){
                 if(clients[i].socket == client_sock){
@@ -201,6 +218,20 @@ void *handle_client(void *arg){
             continue;
         }
 
+        if(strncmp(buffer, "ENTER_PRIVATE ", 14) == 0){
+            char partner[32];
+            sscanf(buffer + 14, "%31s", partner);
+            for(int i = 0; i < client_count; i++){
+                if(clients[i].socket == client_sock){
+                    strcpy(clients[i].private_chat_with, partner);
+                    break;
+                }
+            }
+            notify_private_chat(client_name, partner, "вошёл в");
+            continue;
+        }
+
+//уведомления о выходах из чатов
         if(strcmp(buffer, "LEAVE_COMMON") == 0){
             for(int i = 0; i < client_count; i++){
                 if(clients[i].socket == client_sock){
@@ -211,6 +242,21 @@ void *handle_client(void *arg){
             char leave_msg[BUFFER_SIZE];
             snprintf(leave_msg, sizeof(leave_msg), " %s вышел из чата", client_name);
             broadcast_messenge("Система", leave_msg, client_sock);
+            continue;
+        }
+
+        if(strcmp(buffer, "LEAVE_PRIVATE") == 0){
+            char partner[32] = "";
+            for(int i = 0; i < client_count; i++){
+                if(clients[i].socket == client_sock){
+                    strcpy(partner, clients[i].private_chat_with);
+                    clients[i].private_chat_with[0] = '\0';
+                    break;
+                }
+            }
+            if(strlen(partner) > 0){
+                notify_private_chat(client_name, partner, "вышел из");
+            }
             continue;
         }
 
@@ -259,6 +305,9 @@ void *handle_client(void *arg){
     snprintf(log_buf, sizeof(log_buf), "User Disconnect: %s", client_name);
     log_server(log_buf);
 
+    if(strlen(clients[client_count-1].private_chat_with) > 0){
+        notify_private_chat(client_name, clients[client_count-1].private_chat_with, "вышел из");
+    }
     close(client_sock);
     return NULL;
 }
