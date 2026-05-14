@@ -14,6 +14,22 @@ int server_fd;
 #define PORT 8888
 #define MAX_CLIENTS 100
 #define BUFFER_SIZE 1024
+
+void trim(char *str) {
+    char *start = str;
+    char *end;
+    
+    while(*start == ' ' || *start == '\n' || *start == '\r') start++;
+    if(*start == '\0') { str[0] = '\0'; return; }
+    
+    end = start + strlen(start) - 1;
+    while(end > start && (*end == ' ' || *end == '\n' || *end == '\r')) end--;
+    
+    int len = end - start + 1;
+    memmove(str, start, len);
+    str[len] = '\0';
+}
+
 //структура клиента
 typedef struct {
     int socket;
@@ -124,7 +140,7 @@ void save_message_to_history(const char *from , const char *to, const char *mess
         snprintf(filename, sizeof(filename), "chat_broadcast.log");
     }
     else{
-                char name1[32], name2[32];
+        char name1[32], name2[32];
         strcpy(name1, from);
         strcpy(name2, to);
         if (strcmp(name1, name2) > 0)
@@ -220,6 +236,7 @@ void *handle_client(void *arg){
         return NULL;
     }
     buffer[bytes] = '\0';
+    trim(buffer);
     strcpy(client_name, buffer);
 
 //добавляем в массив
@@ -236,11 +253,6 @@ void *handle_client(void *arg){
     snprintf(log_buf, sizeof(log_buf), "User Connect: %s", client_name);
     log_server(log_buf);
 
-//оповещение всех о входе 
-    char join_msg[BUFFER_SIZE];
-    snprintf(join_msg, sizeof(join_msg), " %s вошел/а в чат", client_name);
-    broadcast_messenge("Система", join_msg, client_sock);
-
 //добавляем в список пользователей
     add_registered_user(client_name);
 
@@ -254,6 +266,7 @@ void *handle_client(void *arg){
         if(strncmp(buffer, "CHECK_USER ", 11) == 0){
             char check_name[32];
             sscanf(buffer + 11, "%31s", check_name);
+            trim(check_name);
             if(user_exists(check_name)){
                 send(client_sock, "USER_EXISTS", 11, 0);
             }
@@ -279,7 +292,7 @@ void *handle_client(void *arg){
                 }
             }
             char enter_msg[BUFFER_SIZE];
-            snprintf(enter_msg, sizeof(enter_msg), " %s вошёл в чат", client_name);
+            snprintf(enter_msg, sizeof(enter_msg), " %s вошёл/а в чат", client_name);
             broadcast_messenge("Система", enter_msg, client_sock);
             continue;
         }
@@ -293,7 +306,7 @@ void *handle_client(void *arg){
                     break;
                 }
             }
-            notify_private_chat(client_name, partner, "вошёл в");
+            notify_private_chat(client_name, partner, "вошёл/а в");
             continue;
         }
 
@@ -306,13 +319,14 @@ void *handle_client(void *arg){
                 }
             }
             char leave_msg[BUFFER_SIZE];
-            snprintf(leave_msg, sizeof(leave_msg), " %s вышел из чата", client_name);
+            snprintf(leave_msg, sizeof(leave_msg), " %s вышел/а из чата", client_name);
             broadcast_messenge("Система", leave_msg, client_sock);
             continue;
         }
 
         if(strcmp(buffer, "LEAVE_PRIVATE") == 0){
             char partner[32] = "";
+            int partner_sock = -1;
             for(int i = 0; i < client_count; i++){
                 if(clients[i].socket == client_sock){
                     strcpy(partner, clients[i].private_chat_with);
@@ -321,7 +335,13 @@ void *handle_client(void *arg){
                 }
             }
             if(strlen(partner) > 0){
-                notify_private_chat(client_name, partner, "вышел из");
+                notify_private_chat(client_name, partner, "вышел/а из");
+                for(int i = 0; i < client_count; i++){
+                    if(strcmp(clients[i].name, partner) == 0){
+                        clients[i].private_chat_with[0] = '\0';
+                        break;
+                    }
+                }
             }
             continue;
         }
@@ -362,10 +382,8 @@ void *handle_client(void *arg){
     }
     pthread_mutex_unlock(&client_mutex);
 
-//оповещение всех о выходе + добавление сообщения в логи
+//добавление сообщения о выходе в логи
     char leave_msg[BUFFER_SIZE];
-    snprintf(leave_msg, sizeof(leave_msg), " %s покинул/а чат", client_name);
-    printf("[%s] Отключился/лась\n", client_name);
 
     snprintf(log_buf, sizeof(log_buf), "User Disconnect: %s", client_name);
     log_server(log_buf);

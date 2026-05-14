@@ -7,7 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-
+#include <sys/time.h>
 
 #define PORT "8888"
 #define BUFFER_SIZE 1024
@@ -17,6 +17,23 @@ int in_chat = 0;
 int receiving_history;
 int current_chat_type = 0;
 char current_chat_name[32];
+char current_partner[32];
+
+//очищение от лишних символов
+void trim(char *str) {
+    char *start = str;
+    char *end;
+    
+    while(*start == ' ' || *start == '\n' || *start == '\r' || *start == '[') start++;
+    if(*start == '\0') { str[0] = '\0'; return; }
+    
+    end = start + strlen(start) - 1;
+    while(end > start && (*end == ' ' || *end == '\n' || *end == '\r' || *end == ']')) end--;
+    
+    int len = end - start + 1;
+    memmove(str, start, len);
+    str[len] = '\0';
+}
 
 //структура контактов
 typedef struct{
@@ -32,15 +49,19 @@ void set_contacts_filename(const char *username){
     snprintf(my_contacts_file, sizeof(my_contacts_file), "my_contacts_%s.txt", username);
 }
 
-
 //подсчет контактов
 void load_my_contacts(){
     FILE *f = fopen(my_contacts_file, "r");
     if(!f) return;
     my_contact_count = 0;
-    while(fscanf(f, "%31s\n", my_contacts[my_contact_count].name) == 1){
+    char temp[32];
+    while(fscanf(f, "%31s", temp) == 1){
+    trim(temp);
+    if(strlen(temp) > 0){
+        strcpy(my_contacts[my_contact_count].name, temp);
         my_contact_count++;
     }
+}
 }
 
 //сохраняем контакты в файл
@@ -55,8 +76,12 @@ void save_my_contacts(){
 
 //добавляем новый контакт
 void add_my_contact(const char *name){
+    char clean[32];
+    strcpy(clean, name);
+    trim(clean);
+    if(strlen(clean) == 0) return;
     for(int i = 0; i < my_contact_count; i++){
-        if(strcmp(my_contacts[i].name, name) == 0){
+        if(strcmp(my_contacts[i].name, clean) == 0){
             return;
         }
     }
@@ -87,6 +112,17 @@ typedef struct{
 ChatCache chat_caches[50];
 int chat_cache_count = 0;
 int receiving_history = 0;
+
+void get_cache_filename(const char *my_name, const char *partner, char *filename){
+    snprintf(filename, 128, "%s_%s", my_name, partner);
+}
+
+void get_server_history_name(const char *name1, const char *name2, char *result) {
+    if (strcmp(name1, name2) < 0)
+        snprintf(result, 64, "%s_%s", name1, name2);
+    else
+        snprintf(result, 64, "%s_%s", name2, name1);
+}
 
 //история с сервера
 void load_cache_from_file(const char *chat_name){
@@ -133,7 +169,7 @@ void save_to_cache_file(const char *chat_name, const char *message){
     }
 }
 
-//вывод кжша
+//вывод кэша
 void show_cached_messages(const char *chat_name){
     for(int i = 0; i < chat_cache_count; i++){
         if(strcmp(chat_caches[i].chat_name, chat_name) == 0){
@@ -165,6 +201,8 @@ void *receive_message(void *arg){
         if (strcmp(buffer, "HISTORY_END") == 0) {
             receiving_history = 0;
             show_cached_messages(current_chat_name);
+            printf("> ");
+            fflush(stdout);
             continue;
         }
 
@@ -172,42 +210,47 @@ void *receive_message(void *arg){
             save_to_cache_file(current_chat_name, buffer);
             continue;
         }
-
-        if(strncmp(buffer, "[ЛС от ", 11) == 0){
-            char sender[64] = {0};
-
+        if(strncmp(buffer, "[ЛС от ", 11) == 0)
+        {
+            char sender[32];
             char *start = buffer + 11;
             char *end = strchr(start, ']');
             if(end){
                 int len = end - start;
-                if(len>63) len = 63;
+                if(len > 31) len = 31;
                 strncpy(sender, start, len);
                 sender[len] = '\0';
             }
-
+            trim(sender);
             add_my_contact(sender);
-            save_to_cache_file(sender, buffer);
-            if(in_chat && current_chat_type == 2 && strcmp(current_chat_name, sender) == 0){
-                printf("\r\033[K");
-                printf("%s\n", buffer);
-                printf("> ");
-                fflush(stdout);
-            }
-        }
-        else if(strncmp(buffer, "[Система]", 9) == 0){
-            if(in_chat && current_chat_type == 1 || in_chat && current_chat_type == 2){
-                printf("\r\033[K");
-                printf("%s\n", buffer);
-                printf("> ");
-                fflush(stdout);
-            }
-        }
-        else if(in_chat && current_chat_type == 1 && buffer[0] == '['){
-            printf("\r\033[K");
-            printf("%s\n", buffer);
-            printf("> ");
-            fflush(stdout);
 
+            char cache_filename[128];
+            get_cache_filename(my_name, sender, cache_filename);
+            save_to_cache_file(cache_filename, buffer);
+
+            if(in_chat && current_chat_type == 2 && strcmp(current_partner, sender) == 0){
+                printf("\r\033[K%s\n> ", buffer);
+                fflush(stdout);
+            }
+        }
+        
+        else if(buffer[0] == '[' && strncmp(buffer, "[Система]", 9) != 0){
+            if(in_chat && current_chat_type == 1){
+                printf("\r\033[K%s\n> ", buffer);
+                fflush(stdout);
+            }
+        }
+
+        else if(strncmp(buffer, "[Система]", 9) == 0){
+            if(in_chat && current_chat_type == 1){
+                printf("\r\033[K%s\n> ", buffer);
+                fflush(stdout);
+            }
+
+            else if(in_chat && current_chat_type == 2 && strstr(buffer, "личный чат") != NULL){
+                printf("\r\033[K%s\n> ", buffer);
+                fflush(stdout);
+            }
         }
     }
     return NULL;
@@ -273,7 +316,7 @@ void enter_private_chat(){
         show_my_contacts();
 
         if(my_contact_count == 0){
-            printf("У вас нет контактов Сначала отправте личное сообщение - @имя или /exit\n");
+            printf("У вас нет контактов. Сначала отправте личное сообщение - @имя или /exit\n");
         }
         else{
             printf("\nВведите номер собеседника, @имя для добавления нового или /exit: ");
@@ -284,6 +327,7 @@ void enter_private_chat(){
         if(strcmp(input, "/exit") == 0) return;
         if(input[0] == '@'){
             sscanf(input + 1, "%31s", recipient);
+            trim(recipient);
 //проверяем есть ли уже в контактах
             int already_contact = 0;
             for(int i = 0; i < my_contact_count; i++){
@@ -301,7 +345,15 @@ void enter_private_chat(){
             snprintf(command, sizeof(command), "CHECK_USER %s", recipient);
             send(server_sock, command, strlen(command), 0);
 
+            struct timeval tv;
+            tv.tv_sec = 3;
+            tv.tv_usec = 0;
+            setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
             int bytes = recv(server_sock, response, sizeof(response) - 1, 0);
+            tv.tv_sec = 0;
+            setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+            
             if(bytes > 0){
                 response[bytes] = '\0';
                 if(strcmp(response, "USER_EXISTS") == 0){
@@ -326,7 +378,11 @@ void enter_private_chat(){
         }
     }
     current_chat_type = 2;
-    strcpy(current_chat_name, recipient);
+
+    strcpy(current_partner, recipient);
+    char cache_filename[128];
+    get_cache_filename(my_name, recipient, cache_filename);
+    strcpy(current_chat_name, cache_filename);
 
     in_chat = 1;
 
@@ -334,13 +390,16 @@ void enter_private_chat(){
     snprintf(cmd, sizeof(cmd), "ENTER_PRIVATE %s", recipient);
     send(server_sock, cmd, strlen(cmd), 0);
 
-    load_cache_from_file(recipient);
+    char server_name[64];
+    get_server_history_name(my_name, recipient, server_name);
+    load_cache_from_file(cache_filename);
+    
     printf("\n--- Личный чат с %s ---\n", recipient);
     printf("Введите /exit для выхода\n\n");
 
     int cache_empty = 1;
     for(int i = 0; i < chat_cache_count; i++){
-        if(strcmp(chat_caches[i].chat_name, recipient) == 0 && chat_caches[i].msg_count > 0){
+        if(strcmp(chat_caches[i].chat_name, cache_filename) == 0 && chat_caches[i].msg_count > 0){
             cache_empty = 0;
             break;
         }
@@ -348,10 +407,10 @@ void enter_private_chat(){
 
     if(cache_empty){
         char get_cmd[64];
-        snprintf(get_cmd, sizeof(get_cmd), "GET_HISTORY %s", recipient);
+        snprintf(get_cmd, sizeof(get_cmd), "GET_HISTORY %s", server_name);
         send(server_sock, get_cmd, strlen(get_cmd), 0);
     }
-    else show_cached_messages(recipient);
+    else show_cached_messages(cache_filename);
 
     while(in_chat){
         printf("> ");
@@ -360,6 +419,7 @@ void enter_private_chat(){
         msg[strcspn(msg, "\n")] = '\0';
 
         if(strcmp(msg, "/exit") == 0){
+            send(server_sock, "LEAVE_PRIVATE", 13, 0);
             in_chat = 0;
             break;
         }
@@ -368,8 +428,8 @@ void enter_private_chat(){
         snprintf(buffer, sizeof(buffer), "@%s %s", recipient, msg);
         send(server_sock, buffer, strlen(buffer), 0);
         char self_msg[BUFFER_SIZE];
-        snprintf(self_msg, sizeof(self_msg), "[%s]: %s", my_name, msg);
-        save_to_cache_file(recipient, self_msg);
+        snprintf(self_msg, sizeof(self_msg), "[ЛС от %s]: %s", my_name, msg);
+        save_to_cache_file(cache_filename, self_msg);
     }
 
     current_chat_type = 0;
