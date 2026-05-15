@@ -6,6 +6,7 @@
 #include <locale.h>
 #include <time.h>
 #include <signal.h>
+#include <errno.h>
 
 #define _GNU_SOURCE
 #include <string.h>
@@ -60,7 +61,7 @@ void notify_private_chat(const char *client_name, const char *partner, const cha
 
     pthread_mutex_lock(&client_mutex);
     for(int i = 0; i < client_count; i++){
-        if(clients[i].active && strcmp(clients[i].private_chat_with, client_name) == 0){
+        if(clients[i].active && strcmp(clients[i].name, partner) == 0 && strcmp(clients[i].private_chat_with, client_name) == 0){
             send(clients[i].socket, msg, strlen(msg), 0);
             break;
         }
@@ -228,6 +229,7 @@ void *handle_client(void *arg){
     char buffer[BUFFER_SIZE];
     int bytes;
     char client_name[32];
+    int my_connection_id;
 
 //получаем имя
     bytes = recv(client_sock, buffer, BUFFER_SIZE - 1, 0);
@@ -241,11 +243,49 @@ void *handle_client(void *arg){
 
 //добавляем в массив
     pthread_mutex_lock(&client_mutex);
-    clients[client_count].socket = client_sock;
-    strcpy(clients[client_count].name, client_name);
-    clients[client_count].active = 1;
-    client_count++;
+
+    int found = -1;
+    for(int i = 0; i < client_count; i++){
+        if(clients[i].active && strcmp(clients[i].name, client_name) == 0){
+            found = i;
+            break;
+        }
+    }
+
+    if(found != -1){
+        close(clients[found].socket);
+        clients[found].socket = client_sock;
+        clients[found].active = 1;
+        clients[found].in_common_chat = 0;
+        clients[found].private_chat_with[0] = '\0';
+    }
+    else{
+        int slot = -1;
+        for(int i = 0; i < client_count; i++){
+            if(!clients[i].active){
+                slot = i;
+                break;
+            }
+        }
+
+        if(slot == -1){
+            if(client_count >= MAX_CLIENTS){
+                pthread_mutex_unlock(&client_mutex);
+                close(client_sock);
+                return NULL;
+            }
+            slot = client_count;
+            client_count++;
+        }
+        clients[slot].socket = client_sock;
+        strcpy(clients[slot].name, client_name);
+        clients[slot].active = 1;
+        clients[slot].in_common_chat = 0;
+        clients[slot].private_chat_with[0] = '\0';
+    }
+
     pthread_mutex_unlock(&client_mutex);
+
     printf("[%s] Подключился/лась\n", client_name);
 
 //добавляем сообщение о подключение в логи
@@ -306,7 +346,12 @@ void *handle_client(void *arg){
                     break;
                 }
             }
-            notify_private_chat(client_name, partner, "вошёл/а в");
+            for(int i = 0; i < client_count; i++){
+                if(strcmp(clients[i].name, partner) == 0 && clients[i].active){
+                    notify_private_chat(client_name, partner, "вошёл/а в");
+                    break;
+                }
+            }
             continue;
         }
 
@@ -326,7 +371,6 @@ void *handle_client(void *arg){
 
         if(strcmp(buffer, "LEAVE_PRIVATE") == 0){
             char partner[32] = "";
-            int partner_sock = -1;
             for(int i = 0; i < client_count; i++){
                 if(clients[i].socket == client_sock){
                     strcpy(partner, clients[i].private_chat_with);
@@ -334,14 +378,9 @@ void *handle_client(void *arg){
                     break;
                 }
             }
+            
             if(strlen(partner) > 0){
                 notify_private_chat(client_name, partner, "вышел/а из");
-                for(int i = 0; i < client_count; i++){
-                    if(strcmp(clients[i].name, partner) == 0){
-                        clients[i].private_chat_with[0] = '\0';
-                        break;
-                    }
-                }
             }
             continue;
         }
@@ -373,10 +412,6 @@ void *handle_client(void *arg){
     for(int i = 0; i<client_count; i++){
         if(clients[i].socket == client_sock){
             clients[i].active = 0;
-            for(int j = i; j<client_count - 1; j++){
-                clients[j] = clients[j+1];
-            }
-            client_count--;
             break;
         }
     }

@@ -189,8 +189,11 @@ void *receive_message(void *arg){
     while(1){
         bytes = recv(server_sock, buffer, BUFFER_SIZE - 1, 0);
         if(bytes <= 0) {
-            printf("\nСоединение потеряно\n");
-            break;
+            if(bytes == 0) {
+                printf("\nСоединение закрыто сервером\n");
+            }
+            close(server_sock);
+            exit(1);
         }
         buffer[bytes] = '\0';
 
@@ -242,7 +245,7 @@ void *receive_message(void *arg){
         }
 
         else if(strncmp(buffer, "[Система]", 9) == 0){
-            if(in_chat && current_chat_type == 1){
+            if(in_chat && current_chat_type == 1 && strstr(buffer, "личный чат") == NULL){
                 printf("\r\033[K%s\n> ", buffer);
                 fflush(stdout);
             }
@@ -263,7 +266,7 @@ void enter_common_chat(){
     strcpy(current_chat_name, "Общий чат");
     char msg[BUFFER_SIZE];
     in_chat = 1;
-
+    
     load_cache_from_file("BROADCAST");
     printf("\n--- Общий чат ---\n");
     printf("Все пользователи видят сообщения\n");
@@ -282,7 +285,6 @@ void enter_common_chat(){
     else{
         show_cached_messages("BROADCAST");
     }
-
     send(server_sock, "ENTER_COMMON", 12, 0);
 
     while(in_chat){
