@@ -1,20 +1,45 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <locale.h>
 #include <time.h>
 #include <signal.h>
 #include <errno.h>
 
-#define _GNU_SOURCE
 #include <string.h>
 
 int server_fd;
 #define PORT 8888
 #define MAX_CLIENTS 100
 #define BUFFER_SIZE 1024
+
+//структура клиента
+typedef struct Client{
+    int socket;
+    char name[32];
+    int active;
+    int in_common_chat;
+    char private_chat_with[32];
+    pthread_t thread;
+    struct Client *next;
+} Client;
+//массив клиентов
+Client *clients = NULL;
+pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+//список всех пользователей, какие заходили в чат
+typedef struct{
+    char name[32];
+    int exists;
+} RegisteredUser;
+RegisteredUser registered_users[100];
+int registered_count = 0;
+pthread_mutex_t registered_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void trim(char *str) {
     char *start = str;
@@ -29,44 +54,6 @@ void trim(char *str) {
     int len = end - start + 1;
     memmove(str, start, len);
     str[len] = '\0';
-}
-
-//структура клиента
-typedef struct {
-    int socket;
-    char name[32];
-    int active;
-    int in_common_chat;
-    char private_chat_with[32];
-} Client;
-//массив клиентов
-Client clients[MAX_CLIENTS];
-int client_count = 0;
-pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-//список всех пользователей, какие заходили в чат
-typedef struct{
-    char name[32];
-    int exists;
-} RegisteredUser;
-RegisteredUser registered_users[100];
-int registered_count = 0;
-pthread_mutex_t registered_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-
-//уведомления в личных чатах
-void notify_private_chat(const char *client_name, const char *partner, const char *status){
-    char msg[BUFFER_SIZE];
-    snprintf(msg, sizeof(msg), "[Система]: %s %s личный чат", client_name, status);
-
-    pthread_mutex_lock(&client_mutex);
-    for(int i = 0; i < client_count; i++){
-        if(clients[i].active && strcmp(clients[i].name, partner) == 0 && strcmp(clients[i].private_chat_with, client_name) == 0){
-            send(clients[i].socket, msg, strlen(msg), 0);
-            break;
-        }
-    }
-    pthread_mutex_unlock(&client_mutex);
 }
 
 //создание списка пользователей и добавление новых
@@ -101,8 +88,10 @@ int(user_exists(const char *name)){
 
 void add_registered_user(const char *name){
     pthread_mutex_lock(&registered_mutex);
-
-    if(user_exists(name)) return;
+    if(user_exists(name)) { 
+        pthread_mutex_unlock(&registered_mutex); 
+        return; 
+    }
     if(registered_count < 100){
         strcpy(registered_users[registered_count].name, name);
         registered_users[registered_count].exists = 1;
@@ -113,12 +102,21 @@ void add_registered_user(const char *name){
     pthread_mutex_unlock(&registered_mutex);
 }
 
-//функция обработчик для завершения сервера
-void handle_sigint(int sig){
-    printf("\nВыключение сервера\n");
-    log_server("Server Stop");
-    close(server_fd);
-    exit(0);
+//уведомления в личных чатах
+void notify_private_chat(const char *client_name, const char *partner, const char *status){
+    char msg[BUFFER_SIZE];
+    snprintf(msg, sizeof(msg), "[Система]: %s %s личный чат", client_name, status);
+
+    pthread_mutex_lock(&client_mutex);
+    Client *cur = clients;
+    while(cur){
+        if(cur->active && strcmp(cur->name, partner) == 0 && strcmp(cur->private_chat_with, client_name) == 0){
+            send(cur->socket, msg, strlen(msg), 0);
+            break;
+        }
+        cur = cur->next;
+    }
+    pthread_mutex_unlock(&client_mutex);
 }
 
 //логи сервера 
@@ -132,6 +130,14 @@ void log_server(const char *event){
 
     fprintf(f, "[%s] %s\n", time_str, event);
     fclose(f);
+}
+
+//функция обработчик для завершения сервера
+void handle_sigint(int sig){
+    printf("\nВыключение сервера\n");
+    log_server("Server Stop");
+    close(server_fd);
+    exit(0);
 }
 
 //сохранение истории
@@ -188,6 +194,7 @@ void send_chat_history(int client_sock, const char *current_user, const char *ch
 
 //сообщение для всех
 void broadcast_messenge(const char *sender_name, const char *message, int sender_socket){
+    
     if(strcmp(sender_name, "Система") != 0){
         save_message_to_history(sender_name, "ALL", message, 1);
     }
@@ -195,11 +202,13 @@ void broadcast_messenge(const char *sender_name, const char *message, int sender
     snprintf(full_message, sizeof(full_message), "[%s]: %s", sender_name, message);
 
     pthread_mutex_lock(&client_mutex);
-    for(int i = 0; i<client_count; i++)
-    {
-        if(clients[i].active && clients[i].socket != sender_socket){
-            send(clients[i].socket, full_message, strlen(full_message), 0);
+    Client *cur = clients;
+    
+    while(cur){
+        if(cur->active && cur->socket != sender_socket){
+            send(cur->socket, full_message, strlen(full_message), 0);
         }
+        cur = cur->next;
     }
     pthread_mutex_unlock(&client_mutex);
 }
@@ -213,11 +222,14 @@ int sender_sock){
     save_message_to_history(sender_name, recipient_name, message, 0);
 
     pthread_mutex_lock(&client_mutex);
-    for(int i = 0; i<client_count; i++){
-        if(clients[i].active && strcasecmp(clients[i].name, recipient_name) == 0){
-            send(clients[i].socket, full_message, strlen(full_message), 0);
+    Client *cur = clients;
+    
+    while(cur){
+        if(cur->active && strcasecmp(cur->name, recipient_name) == 0){
+            send(cur->socket, full_message, strlen(full_message), 0);
             break;
         }
+        cur = cur->next;
     }
     pthread_mutex_unlock(&client_mutex);
 }
@@ -229,7 +241,6 @@ void *handle_client(void *arg){
     char buffer[BUFFER_SIZE];
     int bytes;
     char client_name[32];
-    int my_connection_id;
 
 //получаем имя
     bytes = recv(client_sock, buffer, BUFFER_SIZE - 1, 0);
@@ -241,66 +252,41 @@ void *handle_client(void *arg){
     trim(buffer);
     strcpy(client_name, buffer);
 
-//добавляем в массив
     pthread_mutex_lock(&client_mutex);
 
-    int found = -1;
-    for(int i = 0; i < client_count; i++){
-        if(clients[i].active && strcmp(clients[i].name, client_name) == 0){
-            found = i;
+    Client *old = clients;
+    while(old){
+        if(old->active && strcmp(old->name, client_name) == 0){
+            close(old->socket);
+            old->active = 0;
             break;
         }
+        old = old->next;
     }
 
-    if(found != -1){
-        close(clients[found].socket);
-        clients[found].socket = client_sock;
-        clients[found].active = 1;
-        clients[found].in_common_chat = 0;
-        clients[found].private_chat_with[0] = '\0';
-    }
-    else{
-        int slot = -1;
-        for(int i = 0; i < client_count; i++){
-            if(!clients[i].active){
-                slot = i;
-                break;
-            }
-        }
+    Client *new_client = (Client *)calloc(1, sizeof(Client));
+    new_client->socket = client_sock;
+    strcpy(new_client->name, client_name);
+    new_client->active = 1;
+    new_client->in_common_chat = 0;
+    new_client->private_chat_with[0] = '\0';
+    new_client->thread = pthread_self();
 
-        if(slot == -1){
-            if(client_count >= MAX_CLIENTS){
-                pthread_mutex_unlock(&client_mutex);
-                close(client_sock);
-                return NULL;
-            }
-            slot = client_count;
-            client_count++;
-        }
-        clients[slot].socket = client_sock;
-        strcpy(clients[slot].name, client_name);
-        clients[slot].active = 1;
-        clients[slot].in_common_chat = 0;
-        clients[slot].private_chat_with[0] = '\0';
-    }
+    new_client->next = clients;
+    clients = new_client;
 
     pthread_mutex_unlock(&client_mutex);
 
-    printf("[%s] Подключился/лась\n", client_name);
-
-//добавляем сообщение о подключение в логи
-    char log_buf[64];
-    snprintf(log_buf, sizeof(log_buf), "User Connect: %s", client_name);
-    log_server(log_buf);
-
-//добавляем в список пользователей
+    log_server("User Connect:");
     add_registered_user(client_name);
 
 //обработка сообщений от пользователя
     while(1){
         bytes = recv(client_sock, buffer, BUFFER_SIZE - 1, 0);
         if(bytes <= 0) break;
+
         buffer[bytes] = '\0';
+        trim(buffer);
 
 //проверка существует ли пользователь
         if(strncmp(buffer, "CHECK_USER ", 11) == 0){
@@ -324,62 +310,79 @@ void *handle_client(void *arg){
         }
 
 //уведомления о входах в чаты
-        if(strcmp(buffer, "ENTER_COMMON") == 0){
-            for(int i = 0; i < client_count; i++){
-                if(clients[i].socket == client_sock){
-                    clients[i].in_common_chat = 1;
+        if (strcmp(buffer, "ENTER_COMMON") == 0) {
+            pthread_mutex_lock(&client_mutex);
+            Client *cur = clients;
+            while (cur) {
+                if (cur->socket == client_sock) {
+                    cur->in_common_chat = 1;
                     break;
                 }
+                cur = cur->next;
             }
+            pthread_mutex_unlock(&client_mutex);
             char enter_msg[BUFFER_SIZE];
             snprintf(enter_msg, sizeof(enter_msg), " %s вошёл/а в чат", client_name);
             broadcast_messenge("Система", enter_msg, client_sock);
             continue;
         }
 
-        if(strncmp(buffer, "ENTER_PRIVATE ", 14) == 0){
+        if (strncmp(buffer, "ENTER_PRIVATE ", 14) == 0) {
             char partner[32];
             sscanf(buffer + 14, "%31s", partner);
-            for(int i = 0; i < client_count; i++){
-                if(clients[i].socket == client_sock){
-                    strcpy(clients[i].private_chat_with, partner);
+            pthread_mutex_lock(&client_mutex);
+            Client *cur = clients;
+            while (cur) {
+                if (cur->socket == client_sock) {
+                    strcpy(cur->private_chat_with, partner);
                     break;
                 }
+                cur = cur->next;
             }
-            for(int i = 0; i < client_count; i++){
-                if(strcmp(clients[i].name, partner) == 0 && clients[i].active){
+            pthread_mutex_unlock(&client_mutex);
+            cur = clients;
+            while (cur) {
+                if (cur->active && strcmp(cur->name, partner) == 0) {
                     notify_private_chat(client_name, partner, "вошёл/а в");
                     break;
                 }
+                cur = cur->next;
             }
             continue;
         }
 
 //уведомления о выходах из чатов
-        if(strcmp(buffer, "LEAVE_COMMON") == 0){
-            for(int i = 0; i < client_count; i++){
-                if(clients[i].socket == client_sock){
-                    clients[i].in_common_chat = 0;
+        if (strcmp(buffer, "LEAVE_COMMON") == 0) {
+            pthread_mutex_lock(&client_mutex);
+            Client *cur = clients;
+            while (cur) {
+                if (cur->socket == client_sock) {
+                    cur->in_common_chat = 0;
                     break;
                 }
+                cur = cur->next;
             }
+            pthread_mutex_unlock(&client_mutex);
             char leave_msg[BUFFER_SIZE];
             snprintf(leave_msg, sizeof(leave_msg), " %s вышел/а из чата", client_name);
             broadcast_messenge("Система", leave_msg, client_sock);
             continue;
         }
 
-        if(strcmp(buffer, "LEAVE_PRIVATE") == 0){
+        if (strcmp(buffer, "LEAVE_PRIVATE") == 0) {
             char partner[32] = "";
-            for(int i = 0; i < client_count; i++){
-                if(clients[i].socket == client_sock){
-                    strcpy(partner, clients[i].private_chat_with);
-                    clients[i].private_chat_with[0] = '\0';
+            pthread_mutex_lock(&client_mutex);
+            Client *cur = clients;
+            while (cur) {
+                if (cur->socket == client_sock) {
+                    strcpy(partner, cur->private_chat_with);
+                    cur->private_chat_with[0] = '\0';
                     break;
                 }
+                cur = cur->next;
             }
-            
-            if(strlen(partner) > 0){
+            pthread_mutex_unlock(&client_mutex);
+            if (strlen(partner) > 0) {
                 notify_private_chat(client_name, partner, "вышел/а из");
             }
             continue;
@@ -409,24 +412,25 @@ void *handle_client(void *arg){
 
 //удаляем клиента при выходе
     pthread_mutex_lock(&client_mutex);
-    for(int i = 0; i<client_count; i++){
-        if(clients[i].socket == client_sock){
-            clients[i].active = 0;
+    Client *prev = NULL, *cur = clients;
+    while (cur) {
+        if (cur->socket == client_sock) {
+            if (prev) prev->next = cur->next;
+            else clients = cur->next;
+            free(cur);
             break;
         }
+        prev = cur;
+        cur = cur->next;
     }
     pthread_mutex_unlock(&client_mutex);
 
-//добавление сообщения о выходе в логи
-    char leave_msg[BUFFER_SIZE];
-
+    char log_buf[64];
     snprintf(log_buf, sizeof(log_buf), "User Disconnect: %s", client_name);
     log_server(log_buf);
-
     close(client_sock);
     return NULL;
 }
-
 int main(){
     setlocale(LC_ALL, "ru_RU.UTF-8");
     int *client_fd;
@@ -437,24 +441,33 @@ int main(){
     signal(SIGINT, handle_sigint);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(PORT);
 
     bind(server_fd, (struct sockaddr*)&addr, sizeof(addr));
-    listen(server_fd, 5);
+    listen(server_fd, 10);
     log_server("Server Start");
-
     printf("Сервер слушает порт %d\n", PORT);
+
 
     load_registered_users();
 
     while(1){
         client_fd = malloc(sizeof(int));
         *client_fd = accept(server_fd, (struct sockaddr*)&addr, &addr_len);
+        if (*client_fd == -1) {
+            free(client_fd);
+            continue;
+        }
+        pthread_t thread;
         pthread_create(&thread, NULL, handle_client, client_fd);
-        pthread_detach(thread);
+        pthread_detach(thread); 
     }
 
     return 0;
-}
+} 

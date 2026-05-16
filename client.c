@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/time.h>
+#include <errno.h>
 
 #define PORT "8888"
 #define BUFFER_SIZE 1024
@@ -299,12 +300,11 @@ void enter_common_chat(){
             break;
         }
 
-        send(server_sock, msg, strlen(msg), 0);
+        int sent = send(server_sock, msg, strlen(msg), 0);
         char self_msg[BUFFER_SIZE];
         snprintf(self_msg, sizeof(self_msg), "[%s]: %s", my_name, msg);
         save_to_cache_file("BROADCAST", self_msg);
     }
-
     current_chat_type = 0;
 }
 
@@ -348,7 +348,7 @@ void enter_private_chat(){
             send(server_sock, command, strlen(command), 0);
 
             struct timeval tv;
-            tv.tv_sec = 3;
+            tv.tv_sec = 10;
             tv.tv_usec = 0;
             setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
 
@@ -411,6 +411,7 @@ void enter_private_chat(){
         char get_cmd[64];
         snprintf(get_cmd, sizeof(get_cmd), "GET_HISTORY %s", server_name);
         send(server_sock, get_cmd, strlen(get_cmd), 0);
+        usleep(200000);
     }
     else show_cached_messages(cache_filename);
 
@@ -428,7 +429,7 @@ void enter_private_chat(){
 
         char buffer[BUFFER_SIZE];
         snprintf(buffer, sizeof(buffer), "@%s %s", recipient, msg);
-        send(server_sock, buffer, strlen(buffer), 0);
+        int sent = send(server_sock, buffer, strlen(buffer), 0);
         char self_msg[BUFFER_SIZE];
         snprintf(self_msg, sizeof(self_msg), "[ЛС от %s]: %s", my_name, msg);
         save_to_cache_file(cache_filename, self_msg);
@@ -486,6 +487,11 @@ int main(int argc, char *argv[]){
         return 1;
     }
 
+    int opt = 1;
+    setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct linger lo = {1, 0};
+    setsockopt(server_sock, SOL_SOCKET, SO_LINGER, &lo, sizeof(lo));
+
 //подключение к серверу
     if(connect(server_sock, res->ai_addr, res->ai_addrlen) == -1){
         perror("connect");
@@ -521,8 +527,9 @@ int main(int argc, char *argv[]){
             }
             else if (strcmp(choice, "3") == 0){
                 printf("Выход из чата\n");
-                send(server_sock, "/exit", 5, 0);
-                break;
+                send(server_sock, "/exit", 5, 0); 
+                close(server_sock);
+                exit(0);
             }
             else printf("Неверный выбор\n");
         }
