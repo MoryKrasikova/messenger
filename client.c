@@ -347,25 +347,21 @@ void enter_private_chat(){
             snprintf(command, sizeof(command), "CHECK_USER %s", recipient);
             send(server_sock, command, strlen(command), 0);
 
-            struct timeval tv;
-            tv.tv_sec = 10;
-            tv.tv_usec = 0;
-            setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-
             int bytes = recv(server_sock, response, sizeof(response) - 1, 0);
-            tv.tv_sec = 0;
-            setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-            
             if(bytes > 0){
                 response[bytes] = '\0';
                 if(strcmp(response, "USER_EXISTS") == 0){
                     add_my_contact(recipient);
                     break;
                 }
-                else{
+                else if(strcmp(response, "USER_NOT_EXISTS") == 0){
                     printf("Пользователь %s не найден\n", recipient);
                     continue;
                 }
+            }
+            else{
+                printf("Ошибка при проверке пользователя\n");
+                continue;
             }
         }
         else{
