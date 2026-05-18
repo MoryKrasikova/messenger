@@ -19,6 +19,8 @@ int receiving_history;
 int current_chat_type = 0;
 char current_chat_name[32];
 char current_partner[32];
+char group_response[BUFFER_SIZE];
+int group_response_ready = 0;
 
 //очищение от лишних символов
 void trim(char *str) {
@@ -204,6 +206,7 @@ void *receive_message(void *arg){
         }
         if (strcmp(buffer, "HISTORY_END") == 0) {
             receiving_history = 0;
+            printf("[DEBUG] HISTORY_END, current_chat_name='%s'\n", current_chat_name);
             show_cached_messages(current_chat_name);
             printf("> ");
             fflush(stdout);
@@ -214,6 +217,13 @@ void *receive_message(void *arg){
             save_to_cache_file(current_chat_name, buffer);
             continue;
         }
+
+        if(strncmp(buffer, "[GROUP]", 7) == 0) {
+            strcpy(group_response, buffer);
+            group_response_ready = 1;
+            continue;
+        }
+
         if(strncmp(buffer, "[ЛС от ", 11) == 0)
         {
             char sender[32];
@@ -233,6 +243,21 @@ void *receive_message(void *arg){
             save_to_cache_file(cache_filename, buffer);
 
             if(in_chat && current_chat_type == 2 && strcmp(current_partner, sender) == 0){
+                printf("\r\033[K%s\n> ", buffer);
+                fflush(stdout);
+            }
+        }
+
+        else if(strncmp(buffer, "[Группа ", 8) == 0) {
+            save_to_cache_file(current_chat_name, buffer);
+            
+            if(in_chat && current_chat_type == 3) {
+                printf("\r\033[K%s\n> ", buffer);
+                fflush(stdout);
+            }
+        }
+        else if(strncmp(buffer, "[Система]: ", 11) == 0 && strstr(buffer, "групп") != NULL) {
+            if(in_chat && current_chat_type == 3) {
                 printf("\r\033[K%s\n> ", buffer);
                 fflush(stdout);
             }
@@ -434,6 +459,192 @@ void enter_private_chat(){
     current_chat_type = 0;
  }
 
+//групповые чаты
+void enter_group_chat(){
+    char input[BUFFER_SIZE];
+    char msg[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+    char group_names[50][32];
+    int group_count_client = 0;
+
+    while(1) {
+        printf("\n--- Групповые чаты ---\n");
+        printf("1. Мои группы\n");
+        printf("2. Создать группу\n");
+        printf("/exit - выход\n");
+        printf("> ");
+        fflush(stdout);
+        fgets(input, sizeof(input), stdin);
+        input[strcspn(input, "\n")] = '\0';
+
+        if(strcmp(input, "/exit") == 0) return;
+
+        if(strcmp(input, "1") == 0){
+            group_response_ready = 0;
+            send(server_sock, "GET_MY_GROUPS", 13, 0);
+
+            for(int w = 0; w < 30 && !group_response_ready; w++) {
+                usleep(100000);
+            }
+            if(!group_response_ready) {
+                printf("Нет ответа от сервера\n");
+                continue;
+            }
+            strcpy(response, group_response + 7);
+
+            
+            if(strstr(response, "У вас нет групп")) {
+                printf("%s", response);
+                continue;
+            }
+
+            group_count_client = 0;
+            char *line = strtok(response, "\n");
+            int idx = 1;
+            printf("\n--- Ваши группы ---\n");
+            while(line && group_count_client < 50){
+                char name[32];
+                sscanf(line, "%31s", name);
+                strcpy(group_names[group_count_client], name);
+                printf("%d. %s\n", idx, line);
+                group_count_client++;
+                idx++;
+                line = strtok(NULL, "\n");
+            }
+
+            printf("\nВведите номер группы или /exit: ");
+            fgets(input, sizeof(input), stdin);
+            input[strcspn(input, "\n")] = '\0';
+
+            if(strcmp(input, "/exit") == 0) continue;
+
+            int num = atoi(input);
+            if(num >= 1 && num <= group_count_client){
+                char *group_name = group_names[num-1];
+
+                in_chat = 1;
+                current_chat_type = 3;
+                printf("\n--- Группа %s ---\n", group_name);
+                printf("/delete - удалить группу (только создатель)\n");
+                printf("/exit - выйти из группы\n\n");
+
+                char cmd[64];
+                snprintf(current_chat_name, sizeof(current_chat_name), "group_%s", group_name);
+                snprintf(cmd, sizeof(cmd), "ENTER_GROUP %s", group_name);
+                send(server_sock, cmd, strlen(cmd), 0);
+                
+                char filename[128];
+                snprintf(filename, sizeof(filename), "cache_%s.txt", current_chat_name);
+                FILE *test = fopen(filename, "r");
+                int cache_empty = (test == NULL);
+                if(test) fclose(test);
+
+                if(cache_empty){
+                    snprintf(cmd, sizeof(cmd), "GET_HISTORY group:%s", group_name);
+                    send(server_sock, cmd, strlen(cmd), 0);
+                }
+                
+                load_cache_from_file(current_chat_name);
+                show_cached_messages(current_chat_name);
+
+                while(in_chat){
+                    printf("> ");
+                    fflush(stdout);
+                    fgets(msg, BUFFER_SIZE, stdin);
+                    msg[strcspn(msg, "\n")] = '\0';
+
+                    if(strcmp(msg, "/exit") == 0){
+                        send(server_sock, "LEAVE_GROUP", 11, 0);
+                        in_chat = 0;
+                        break;
+                    }
+
+                    if(strcmp(msg, "/delete") == 0) {
+                        printf("Вы уверены что хотите удалить группу '%s'? (да/нет): ", group_name);
+                        fgets(input, sizeof(input), stdin);
+                        input[strcspn(input, "\n")] = '\0';
+                        
+                        if(strcmp(input, "да") == 0 || strcmp(input, "yes") == 0) {
+                            char del_cmd[64];
+                            snprintf(del_cmd, sizeof(del_cmd), "DELETE_GROUP %s", group_name);
+                            group_response_ready = 0;
+                            send(server_sock, del_cmd, strlen(del_cmd), 0);
+                            
+                            for(int w = 0; w < 30 && !group_response_ready; w++) {
+                                usleep(100000);
+                            }
+                            if(group_response_ready) {
+                                strcpy(response, group_response + 7);
+                                printf("%s", response);
+                            }
+                            in_chat = 0;
+                            break;
+                        }
+                        continue;
+                    }
+
+                    char buffer[BUFFER_SIZE];
+                    snprintf(buffer, sizeof(buffer), "#%s %s", group_name, msg);
+                    send(server_sock, buffer, strlen(buffer), 0);
+                }
+                current_chat_type = 0;
+            }
+            else{
+                printf("Неверный номер группы\n");
+            }
+        }
+        else if(strcmp(input, "2") == 0){
+            printf("Введите название группы: ");
+            fgets(input, sizeof(input), stdin);
+            input[strcspn(input, "\n")] = '\0';
+            char group_name[32];
+            strcpy(group_name, input);
+            
+            if(strlen(group_name) == 0) {
+                printf("Название не может быть пустым\n");
+                continue;
+            }
+
+            group_response_ready = 0;
+            send(server_sock, "GET_USERS", 9, 0);
+            for(int w = 0; w < 30 && !group_response_ready; w++) {
+                usleep(100000);
+            }
+            if(!group_response_ready) {
+                printf("Нет ответа от сервера\n");
+                continue;
+            }
+            strcpy(response, group_response + 7);
+            
+            if(strstr(response, "Нет других пользователей")) {
+                printf("%s", response);
+                continue;
+            }
+            
+            printf("\nСписок пользователей:\n%s\n", response);
+            printf("Введите имена через запятую (например: паша,артем): ");
+            fgets(input, sizeof(input), stdin);
+            input[strcspn(input, "\n")] = '\0';
+            
+            char cmd[BUFFER_SIZE];
+            snprintf(cmd, sizeof(cmd), "CREATE_GROUP %s %s", group_name, input);
+            group_response_ready = 0;
+            send(server_sock, cmd, strlen(cmd), 0);
+            
+            for(int w = 0; w < 30 && !group_response_ready; w++) {
+                usleep(100000);
+            }
+            if(group_response_ready) {
+                strcpy(response, group_response + 7);
+                printf("%s", response);
+            }
+        }
+        else {
+            printf("Неверный выбор\n");
+        }
+    }
+}
+
 //меню при входе
 void show_menu(){
     printf("\n--------------------------------------\n");
@@ -441,7 +652,8 @@ void show_menu(){
     printf("\n--------------------------------------\n");
     printf("1. Общий чат\n");
     printf("2. Личные сообщения\n");
-    printf("3. Выйти\n");
+    printf("3. Групповые чаты\n");
+    printf("4. Выйти\n");
     printf("\n--------------------------------------\n");
     printf("Выберите действие: ");
 }
@@ -521,7 +733,10 @@ int main(int argc, char *argv[]){
             else if(strcmp(choice, "2") == 0){
                 enter_private_chat();
             }
-            else if (strcmp(choice, "3") == 0){
+            else if(strcmp(choice, "3") == 0){
+                enter_group_chat();
+            }
+            else if (strcmp(choice, "4") == 0){
                 printf("Выход из чата\n");
                 send(server_sock, "/exit", 5, 0); 
                 close(server_sock);
