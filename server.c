@@ -185,7 +185,7 @@ void send_chat_history(int client_sock, const char *current_user, const char *ch
         snprintf(filename, sizeof(filename), "chat_broadcast.log");
     }
     else if (type == 2) {
-        snprintf(filename, sizeof(filename), "group_%s.log", chat_name);
+        snprintf(filename, sizeof(filename), "%s.log", chat_name);
     }
     else {
         char name1[32], name2[32];
@@ -201,13 +201,17 @@ void send_chat_history(int client_sock, const char *current_user, const char *ch
     if (!f) return;
 
     send(client_sock, "HISTORY_START", 13, 0);
-    char line[BUFFER_SIZE];
-    while(fgets(line, sizeof(line), f)){
-        line[strcspn(line, "\n")] = '\0';
-        send(client_sock, line, strlen(line), 0);
-        send(client_sock, "\n", 1, 0);
+    usleep(50000);  
+
+    if (f) {
+        char line[BUFFER_SIZE];
+        while (fgets(line, sizeof(line), f)) {
+            line[strcspn(line, "\n")] = '\0';
+            strcat(line, "\n");
+            send(client_sock, line, strlen(line), 0);
+        }
+        fclose(f);
     }
-    fclose(f);
     send(client_sock, "HISTORY_END", 11, 0);
 }
 
@@ -391,13 +395,10 @@ void send_group_message(const char *group_name, const char *sender, const char *
 
 //уведомления группам
 void send_group_notify(const char *group_name, const char *sender, const char *message) {
-    printf("[DEBUG] send_group_notify: group='%s', sender='%s', msg='%s'\n", group_name, sender, message);
     pthread_mutex_lock(&client_mutex);
     Client *cur = clients;
     while(cur) {
-        printf("[DEBUG] cur->name='%s', cur->current_group='%s', active=%d\n", cur->name, cur->current_group, cur->active);
         if(cur->active && strcmp(cur->current_group, group_name) == 0 && strcmp(cur->name, sender) != 0) {
-            printf("[DEBUG] Отправляю %s (socket=%d)\n", cur->name, cur->socket);
             send(cur->socket, message, strlen(message), 0);
         }
         cur = cur->next;
@@ -480,9 +481,8 @@ void *handle_client(void *arg){
             int type = 0;
             if(strcmp(chat_name, "BROADCAST") == 0) {
                 type = 1;
-            } else if(strncmp(chat_name, "group:", 6) == 0) {
+            } else if(strncmp(chat_name, "group_", 6) == 0) {
                 type = 2;
-                memmove(chat_name, chat_name + 6, strlen(chat_name) - 5);
             }
             send_chat_history(client_sock, client_name, chat_name, type);
             continue;
@@ -653,6 +653,7 @@ void *handle_client(void *arg){
                 
                 while(token && cnt < 50){
                     // Ищем пользователя по имени
+                    while(*token == ' ') token++;
                     int found = -1;
                     for(int i = 0; i < registered_count; i++){
                         if(strcmp(registered_users[i].name, token) == 0 && 
@@ -662,7 +663,6 @@ void *handle_client(void *arg){
                         }
                     }
                     if(found != -1){
-                        // Проверка на дубликаты
                         int dup = 0;
                         for(int j = 0; j < cnt; j++){
                             if(indices[j] == found){ dup = 1; break; }

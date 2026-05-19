@@ -21,6 +21,8 @@ char current_chat_name[32];
 char current_partner[32];
 char group_response[BUFFER_SIZE];
 int group_response_ready = 0;
+char check_response[32];
+int check_ready = 0;
 
 //очищение от лишних символов
 void trim(char *str) {
@@ -163,6 +165,7 @@ void load_cache_from_file(const char *chat_name){
 
 //сохранение кэша в файл
 void save_to_cache_file(const char *chat_name, const char *message){
+    if(strlen(message) == 0) return;
     char filename[128];
     snprintf(filename, sizeof(filename), "cache_%s.txt", chat_name);
     FILE *f = fopen(filename, "a");
@@ -179,7 +182,17 @@ void show_cached_messages(const char *chat_name){
             for(int j = 0; j < chat_caches[i].msg_count; j++){
                 printf("%s\n", chat_caches[i].messages[j]);
             }
-            break;
+            return;
+        }
+    }
+
+    load_cache_from_file(chat_name);
+    for(int i = 0; i < chat_cache_count; i++){
+        if(strcmp(chat_caches[i].chat_name, chat_name) == 0){
+            for(int j = 0; j < chat_caches[i].msg_count; j++){
+                printf("%s\n", chat_caches[i].messages[j]);
+            }
+            return;
         }
     }
 }
@@ -199,6 +212,17 @@ void *receive_message(void *arg){
             exit(1);
         }
         buffer[bytes] = '\0';
+        // Обработка ответа на CHECK_USER
+        if(strcmp(buffer, "USER_EXISTS") == 0) {
+            strcpy(check_response, "USER_EXISTS");
+            check_ready = 1;
+            continue;
+        }
+        if(strcmp(buffer, "USER_NOT_EXISTS") == 0) {
+            strcpy(check_response, "USER_NOT_EXISTS");
+            check_ready = 1;
+            continue;
+        }
 
         if (strcmp(buffer, "HISTORY_START") == 0) {
             receiving_history = 1;
@@ -206,7 +230,6 @@ void *receive_message(void *arg){
         }
         if (strcmp(buffer, "HISTORY_END") == 0) {
             receiving_history = 0;
-            printf("[DEBUG] HISTORY_END, current_chat_name='%s'\n", current_chat_name);
             show_cached_messages(current_chat_name);
             printf("> ");
             fflush(stdout);
@@ -249,13 +272,13 @@ void *receive_message(void *arg){
         }
 
         else if(strncmp(buffer, "[Группа ", 8) == 0) {
-            save_to_cache_file(current_chat_name, buffer);
             
             if(in_chat && current_chat_type == 3) {
                 printf("\r\033[K%s\n> ", buffer);
                 fflush(stdout);
             }
         }
+
         else if(strncmp(buffer, "[Система]: ", 11) == 0 && strstr(buffer, "групп") != NULL) {
             if(in_chat && current_chat_type == 3) {
                 printf("\r\033[K%s\n> ", buffer);
@@ -371,20 +394,22 @@ void enter_private_chat(){
             char command[64];
             snprintf(command, sizeof(command), "CHECK_USER %s", recipient);
             send(server_sock, command, strlen(command), 0);
+            check_ready = 0;
+            for(int w = 0; w < 30 && !check_ready; w++) {
+                usleep(100000);
+            }
 
-            int bytes = recv(server_sock, response, sizeof(response) - 1, 0);
-            if(bytes > 0){
-                response[bytes] = '\0';
-                if(strcmp(response, "USER_EXISTS") == 0){
+            if(check_ready) {
+                if(strcmp(check_response, "USER_EXISTS") == 0){
                     add_my_contact(recipient);
                     break;
                 }
-                else if(strcmp(response, "USER_NOT_EXISTS") == 0){
+                else if(strcmp(check_response, "USER_NOT_EXISTS") == 0){
                     printf("Пользователь %s не найден\n", recipient);
                     continue;
                 }
             }
-            else{
+            else {
                 printf("Ошибка при проверке пользователя\n");
                 continue;
             }
@@ -394,7 +419,7 @@ void enter_private_chat(){
 
             if (num >= 1 && num <= my_contact_count) {
                 strcpy(recipient, my_contacts[num-1].name);
-                break;  // выходим из цикла, переходим к чату
+                break;  
             } else {
                 printf("Неверный номер.\n");
             }
@@ -524,28 +549,40 @@ void enter_group_chat(){
 
                 in_chat = 1;
                 current_chat_type = 3;
+
+                char cache_file[64];
+                snprintf(cache_file, sizeof(cache_file), "group_%s", group_name);
+                strcpy(current_chat_name, cache_file);
+
+                load_cache_from_file(current_chat_name);
+
                 printf("\n--- Группа %s ---\n", group_name);
                 printf("/delete - удалить группу (только создатель)\n");
                 printf("/exit - выйти из группы\n\n");
 
-                char cmd[64];
-                snprintf(current_chat_name, sizeof(current_chat_name), "group_%s", group_name);
-                snprintf(cmd, sizeof(cmd), "ENTER_GROUP %s", group_name);
-                send(server_sock, cmd, strlen(cmd), 0);
-                
-                char filename[128];
-                snprintf(filename, sizeof(filename), "cache_%s.txt", current_chat_name);
-                FILE *test = fopen(filename, "r");
-                int cache_empty = (test == NULL);
-                if(test) fclose(test);
+                int cache_empty = 1;
+                for(int i = 0; i < chat_cache_count; i++){
+                    if(strcmp(chat_caches[i].chat_name, cache_file) == 0 && chat_caches[i].msg_count > 0){
+                        cache_empty = 0;
+                        break;
+                    }
+                }
 
+                char cmd[64];
                 if(cache_empty){
-                    snprintf(cmd, sizeof(cmd), "GET_HISTORY group:%s", group_name);
+                    // Кэш пуст: запрашиваем историю, потом входим
+                    snprintf(cmd, sizeof(cmd), "GET_HISTORY %s", cache_file);
+                    send(server_sock, cmd, strlen(cmd), 0);
+                    snprintf(cmd, sizeof(cmd), "ENTER_GROUP %s", group_name);
                     send(server_sock, cmd, strlen(cmd), 0);
                 }
-                
-                load_cache_from_file(current_chat_name);
-                show_cached_messages(current_chat_name);
+                else {
+                    // Кэш не пуст: показываем кэш, потом входим
+                    show_cached_messages(cache_file);
+                    snprintf(cmd, sizeof(cmd), "ENTER_GROUP %s", group_name);
+                    send(server_sock, cmd, strlen(cmd), 0);
+                }
+
 
                 while(in_chat){
                     printf("> ");
@@ -586,6 +623,10 @@ void enter_group_chat(){
                     char buffer[BUFFER_SIZE];
                     snprintf(buffer, sizeof(buffer), "#%s %s", group_name, msg);
                     send(server_sock, buffer, strlen(buffer), 0);
+
+                    char self_msg[BUFFER_SIZE];
+                    snprintf(self_msg, sizeof(self_msg), "[Группа %s][%s]: %s", group_name, my_name, msg);
+                    save_to_cache_file(current_chat_name, self_msg);
                 }
                 current_chat_type = 0;
             }
